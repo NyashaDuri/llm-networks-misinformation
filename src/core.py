@@ -20,51 +20,45 @@ def set_random_seed(seed: int):
     # Note that Autogen only offers a seed cache which must be set
     # each time a new API call to an LLM is made.
 
-def initialize_agents(params):
+def initialize_agents(agent_class_map):
     """Initialize and return a list of agents"""
-    names = ['num_agents', 'api_key', 'temperature']
-    num_agents, api_key, temperature = [params[k] for k in names]
-    agent_class = params['agent_class']
-    # TODO: Generalize the agent initialization process
-    return [agent_class(agent_id=i+1,
-                        api_key=api_key,
-                        temperature=temperature)
-            for i in range(num_agents)]
+    agents = []
+    agent_id = 1
+    for agent_class, config in agent_class_map.items():
+        for _ in range(config['num_agents']):
+            agents.append(agent_class(agent_id=agent_id,
+                                      api_key=config['api_key'],
+                                      temperature=config['temperature']))
+            agent_id += 1
+    return agents
 
 def run(model, parameters):
+    """Run the model for the specified number of rounds."""
     print(f"Starting simulation with {len(model.agents)} agents.")
     
     model.collect_stats(parameters)
     for _ in range(model.num_rounds):
         print(f"Round {model.tick} begins.")
         model.step(parameters)
-        #TODO: Allow more flexibility in when to collect what.
         model.collect_stats(parameters)
         print(f"Round {model.tick} ends.")
         print("-" * 50)
 
     return model.agent_results, model.model_results
-    
+
 def run_simulation(params):
     """Initialize the agents and model, then run the model."""
     model_class = params['model_class']
-    agents = initialize_agents(params)
+    agent_class_map = params['agent_class_map']
+    agents = initialize_agents(agent_class_map)
     model = model_class(agents, params)
     agent_results, model_results = run(model, params)
     return model, agent_results, model_results
 
+# TODO: Chat messages lack data on who sent each message. This makes it very difficult to track who is who in the conversation. This should be fixed.
+
 def get_autogen_chat_results(model, simulation_run_id):
-    """Get the autogen chat results from the model and ensure they are in a JSON
-    serializable format."""
-    chat_results = {agent.name: agent.chat_messages
-                    for agent in model.agents}
-    
-    # Chat messages are not JSON serializable, so build JSON serializable dicts
-    # from them as follows:
-    
-    # TODO: Chat messages lack data on who sent each message. This makes it very
-    # difficult to track who is who in the conversation. This should be fixed.
-    
+    """Get the autogen chat results from the model and ensure they are in a JSON serializable format."""
     chat_results = collections.defaultdict(list)
     for agent in model.agents:
         agent_key = str(agent.name)
@@ -79,7 +73,7 @@ def get_autogen_usage_summary(model):
     usage_summary = autogen.gather_usage_summary(model.agents)
     return usage_summary
 
-def run_multiple_simulations(params:Dict, secrets:Dict={}) -> Dict:
+def run_multiple_simulations(params: Dict, secrets: Dict = {}) -> Dict:
     """Run multiple simulations and collect the results.
     
     Parameters:
@@ -103,15 +97,13 @@ def run_multiple_simulations(params:Dict, secrets:Dict={}) -> Dict:
     graphs = {}
     # All params in params_list should have the same `simulation_id`
     # Only their `simulation_run` and `simulation_run_id` should differ
-    simulation_id =  params_list[0]['simulation_id']
+    simulation_id = params_list[0]['simulation_id']
     assert params_list[0].get('simulation_id') is not None
-    assert all(params['simulation_id'] == simulation_id
-               for params in params_list)
+    assert all(params['simulation_id'] == simulation_id for params in params_list)
 
     # We need to create the random ids for each simulation run before
     # we set the random seeds for the simulation runs.
-    simulation_run_ids = [data_utils.create_id()
-                          for _ in range(len(params_list))]
+    simulation_run_ids = [data_utils.create_id() for _ in range(len(params_list))]
     for i, params in enumerate(params_list):
         set_random_seed(params['seed'])
         # We keep secrets separate from the rest of the params as we don't want
@@ -124,6 +116,7 @@ def run_multiple_simulations(params:Dict, secrets:Dict={}) -> Dict:
             res['simulation_id'] = simulation_id
             res['simulation_run'] = i + 1
             res['simulation_run_id'] = simulation_run_id
+            res['agent_class'] = type(res['agent']).__name__
         for res in model_results:
             res['simulation_id'] = simulation_id
             res['simulation_run'] = i + 1
@@ -137,14 +130,9 @@ def run_multiple_simulations(params:Dict, secrets:Dict={}) -> Dict:
     # Create DataFrames from the results
     agent_df = pd.DataFrame(agent_results_all)
     model_df = pd.DataFrame(model_results_all)
-    chat_data = {"usage_summaries": usage_summaries_all,
-                 "chat_results": chat_results_all}
+    chat_data = {"usage_summaries": usage_summaries_all, "chat_results": chat_results_all}
     
     # Return a dictionary of DataFrames and objects which are JSON serializable
-    data = {'agent': agent_df,
-            'model': model_df,
-            **chat_data,
-            "graphs": graphs,
-            "params": [data_utils.filter_dict_for_json(params)
-                       for params in params_list]}
+    data = {'agent': agent_df, 'model': model_df, **chat_data, "graphs": graphs,
+            "params": [data_utils.filter_dict_for_json(params) for params in params_list]}
     return data
